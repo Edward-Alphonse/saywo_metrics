@@ -1,32 +1,34 @@
 package reporter
 
 import (
-	"fmt"
+	"github.com/Edward-Alphonse/saywo_metrics/sender"
+	"github.com/Edward-Alphonse/saywo_metrics/utils"
 	"github.com/rcrowley/go-metrics"
-	"saywo_metrics/utils"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+var once sync.Once
+
 type MetricsReporter struct {
-	//sender        wf.Sender
+	sender sender.MetricSender
 	//application   application.Tags
 	source       string
 	prefix       string
 	addSuffix    bool
 	interval     time.Duration
 	ticker       *time.Ticker
-	percentiles  []float64              // Percentiles to export from timers and histograms
-	durationUnit time.Duration          // Time conversion unit for durations
-	metrics      map[string]interface{} // for Wavefron specific metrics tyoes, like Histograms
-	errors       chan error
-	start        chan bool
-	close        chan bool
+	percentiles  []float64     // Percentiles to export from timers and histograms
+	durationUnit time.Duration // Time conversion unit for durations
+	//metrics      map[string]interface{} // for Wavefron specific metrics tyoes, like Histograms
+	errors chan error
+	start  chan bool
+	close  chan bool
 	//errorsCount  int64
 	//errorDebug   bool
-	autoStart     bool
+	//autoStart     bool
 	mux           sync.Mutex
 	registry      metrics.Registry
 	runtimeMetric bool // for getting the go runtime metrics
@@ -56,12 +58,12 @@ func Interval(interval time.Duration) Option {
 	}
 }
 
-// DisableAutoStart prevents the Reporter from automatically reporting when created.
-func DisableAutoStart() Option {
-	return func(args *MetricsReporter) {
-		args.autoStart = false
-	}
-}
+//// DisableAutoStart prevents the Reporter from automatically reporting when created.
+//func DisableAutoStart() Option {
+//	return func(args *MetricsReporter) {
+//		args.autoStart = false
+//	}
+//}
 
 // Prefix for the metrics name
 func Prefix(prefix string) Option {
@@ -71,7 +73,7 @@ func Prefix(prefix string) Option {
 }
 
 // AddSuffix adds a metric suffix based on the metric type ('.count', '.value')
-func AddSuffix(addSuffix bool) Option {
+func DisableAddSuffix(addSuffix bool) Option {
 	return func(args *MetricsReporter) {
 		args.addSuffix = addSuffix
 	}
@@ -85,7 +87,7 @@ func AddSuffix(addSuffix bool) Option {
 //}
 
 // Enable Runtime Metric collection
-func RuntimeMetric(enable bool) Option {
+func EnableRuntimeMetric(enable bool) Option {
 	return func(args *MetricsReporter) {
 		args.runtimeMetric = enable
 	}
@@ -99,17 +101,17 @@ func RuntimeMetric(enable bool) Option {
 //}
 
 // NewMetricsReporter create a WavefrontMetricsReporter
-func NewMetricsReporter(sender wf.Sender, setters ...Option) *MetricsReporter {
+func NewMetricsReporter(sender sender.MetricSender, setters ...Option) *MetricsReporter {
 	r := &MetricsReporter{
-		//sender:        sender,
+		sender: sender,
 		//source:        hostname(),
 		interval:     time.Second * 5,
 		percentiles:  []float64{0.5, 0.75, 0.95, 0.99, 0.999},
 		durationUnit: time.Nanosecond,
-		metrics:      make(map[string]interface{}),
-		addSuffix:    true,
+		//metrics:      make(map[string]interface{}),
+		addSuffix: true,
 		//errorsCount:   0,
-		autoStart:     true,
+		//autoStart:     true,
 		runtimeMetric: false,
 	}
 
@@ -117,49 +119,26 @@ func NewMetricsReporter(sender wf.Sender, setters ...Option) *MetricsReporter {
 		setter(r)
 	}
 
-	if r.registry == nil {
-		r.registry = metrics.DefaultRegistry
-	}
-
-	//if r.runtimeMetric == true {
-	//	metrics.RegisterRuntimeMemStats(r.registry)
+	//if r.registry == nil {
+	r.registry = metrics.DefaultRegistry
 	//}
+
+	if r.runtimeMetric == true {
+		metrics.RegisterRuntimeMemStats(r.registry)
+	}
 
 	r.ticker = time.NewTicker(r.interval)
 	r.close = make(chan bool, 1)
 	r.start = make(chan bool, 1)
 	r.errors = make(chan error)
-
-	//go func() {
-	//	running := false
-	//	for {
-	//		select {
-	//		case <-r.ticker.C:
-	//			if running {
-	//				go r.Report()
-	//			}
-	//		case error := <-r.errors:
-	//			if error != nil {
-	//				//atomic.AddInt64(&r.errorsCount, 1)
-	//				//if r.errorDebug {
-	//				//	log.Printf("reporter error: %v\n", error)
-	//				//}
-	//			}
-	//		case <-r.start:
-	//			running = true
-	//		case <-r.close:
-	//			r.Report()
-	//			//r.sender.Close()
-	//			return
-	//		}
-	//	}
-	//}()
-
-	if r.autoStart {
-		r.Start()
-	}
+	//go r.process()
+	//if r.autoStart {
+	//	r.Start()
+	//}
 	return r
 }
+
+//func ()
 
 // Deprecated: use NewMetricsReporter
 //func NewReporter(sender wf.Sender, application application.Tags, setters ...Option) Reporter {
@@ -177,7 +156,13 @@ func NewMetricsReporter(sender wf.Sender, setters ...Option) *MetricsReporter {
 //	})
 //}
 
-func (r *MetricsReporter) process() {
+func (r *MetricsReporter) runOnce() {
+	once.Do(func() {
+		go r.run()
+	})
+}
+
+func (r *MetricsReporter) run() {
 	running := false
 	for {
 		select {
@@ -193,6 +178,7 @@ func (r *MetricsReporter) process() {
 				//}
 			}
 		case <-r.start:
+			r.sender.Start()
 			running = true
 		case <-r.close:
 			r.Report()
@@ -220,26 +206,26 @@ func (r *MetricsReporter) Report() {
 		//		tags[t] = v
 		//	}
 		//}
-
+		timestamp := time.Now().Unix()
 		switch metric.(type) {
 		case metrics.Counter:
 			//if hasDeltaPrefix(name) {
 			//	r.reportDelta(name, metric.(metrics.Counter), tags)
 			//} else {
-			r.errors <- r.sender.SendMetric(r.prepareName(name, "count"), float64(metric.(metrics.Counter).Count()), 0, r.source, tags)
+			r.errors <- r.sender.SendMetric(r.prepareName(name, "count"), tags, float64(metric.(metrics.Counter).Count()), timestamp, r.source)
 			//}
 		case metrics.Gauge:
-			r.errors <- r.sender.SendMetric(r.prepareName(name, "value"), float64(metric.(metrics.Gauge).Value()), 0, r.source, tags)
+			r.errors <- r.sender.SendMetric(r.prepareName(name, "value"), tags, float64(metric.(metrics.Gauge).Value()), timestamp, r.source)
 		case metrics.GaugeFloat64:
-			r.errors <- r.sender.SendMetric(r.prepareName(name, "value"), float64(metric.(metrics.GaugeFloat64).Value()), 0, r.source, tags)
+			r.errors <- r.sender.SendMetric(r.prepareName(name, "value"), tags, float64(metric.(metrics.GaugeFloat64).Value()), timestamp, r.source)
 		//case Histogram:
 		//	r.reportWFHistogram(name, metric.(Histogram), tags)
 		case metrics.Histogram:
-			r.reportHistogram(name, metric.(metrics.Histogram), tags)
+			r.reportHistogram(name, metric.(metrics.Histogram), tags, timestamp)
 		case metrics.Meter:
-			r.reportMeter(name, metric.(metrics.Meter), tags)
+			r.reportMeter(name, metric.(metrics.Meter), tags, timestamp)
 		case metrics.Timer:
-			r.reportTimer(name, metric.(metrics.Timer), tags)
+			r.reportTimer(name, metric.(metrics.Timer), tags, timestamp)
 		}
 	})
 	//actualErrorsCount := r.ErrorsCount()
@@ -248,69 +234,69 @@ func (r *MetricsReporter) Report() {
 	//}
 }
 
-func (r *MetricsReporter) reportDelta(name string, metric metrics.Counter, tags map[string]string) {
-	var prunedName string
-	if strings.HasPrefix(name, deltaPrefix) {
-		prunedName = name[deltaPrefixSize:]
-	} else if strings.HasPrefix(name, altDeltaPrefix) {
-		prunedName = name[altDeltaPrefixSize:]
-	}
-	value := metric.Count()
-	metric.Dec(value)
+//func (r *MetricsReporter) reportDelta(name string, metric metrics.Counter, tags map[string]string) {
+//	var prunedName string
+//	if strings.HasPrefix(name, deltaPrefix) {
+//		prunedName = name[deltaPrefixSize:]
+//	} else if strings.HasPrefix(name, altDeltaPrefix) {
+//		prunedName = name[altDeltaPrefixSize:]
+//	}
+//	value := metric.Count()
+//	metric.Dec(value)
+//
+//	r.errors <- r.sender.SendDeltaCounter(deltaPrefix+r.prepareName(prunedName, "count"), tags, float64(value), r.source)
+//}
+//
+//func (r *MetricsReporter) reportWFHistogram(metricName string, h Histogram, tags map[string]string) {
+//	distributions := h.Distributions()
+//	hgs := map[histogram.Granularity]bool{h.Granularity(): true}
+//	for _, distribution := range distributions {
+//		if len(distribution.Centroids) > 0 {
+//			r.errors <- r.sender.SendDistribution(r.prepareName(metricName), tags, distribution.Centroids, hgs, distribution.Timestamp.Unix(), r.source)
+//		}
+//	}
+//}
 
-	r.errors <- r.sender.SendDeltaCounter(deltaPrefix+r.prepareName(prunedName, "count"), float64(value), r.source, tags)
-}
-
-func (r *MetricsReporter) reportWFHistogram(metricName string, h Histogram, tags map[string]string) {
-	distributions := h.Distributions()
-	hgs := map[histogram.Granularity]bool{h.Granularity(): true}
-	for _, distribution := range distributions {
-		if len(distribution.Centroids) > 0 {
-			r.errors <- r.sender.SendDistribution(r.prepareName(metricName), distribution.Centroids, hgs, distribution.Timestamp.Unix(), r.source, tags)
-		}
-	}
-}
-
-func (r *MetricsReporter) reportHistogram(name string, metric metrics.Histogram, tags map[string]string) {
+func (r *MetricsReporter) reportHistogram(name string, metric metrics.Histogram, tags map[string]string, timestamp int64) {
 	h := metric.Snapshot()
 	ps := h.Percentiles(r.percentiles)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), float64(h.Count()), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".min"), float64(h.Min()), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".max"), float64(h.Max()), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), h.Mean(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".std-dev"), h.StdDev(), 0, r.source, tags)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), tags, float64(h.Count()), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".min"), tags, float64(h.Min()), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".max"), tags, float64(h.Max()), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), tags, h.Mean(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".std-dev"), tags, h.StdDev(), timestamp, r.source)
 	for psIdx, psKey := range r.percentiles {
 		key := strings.Replace(strconv.FormatFloat(psKey*100.0, 'f', -1, 64), ".", "", 1)
-		r.errors <- r.sender.SendMetric(r.prepareName(name+"."+key+"-percentile"), ps[psIdx], 0, r.source, tags)
+		r.errors <- r.sender.SendMetric(r.prepareName(name+"."+key+"-percentile"), tags, ps[psIdx], timestamp, r.source)
 	}
 }
 
-func (r *MetricsReporter) reportMeter(name string, metric metrics.Meter, tags map[string]string) {
+func (r *MetricsReporter) reportMeter(name string, metric metrics.Meter, tags map[string]string, timestamp int64) {
 	m := metric.Snapshot()
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), float64(m.Count()), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".one-minute"), m.Rate1(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".five-minute"), m.Rate5(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".fifteen-minute"), m.Rate15(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), m.RateMean(), 0, r.source, tags)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), tags, float64(m.Count()), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".one-minute"), tags, m.Rate1(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".five-minute"), tags, m.Rate5(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".fifteen-minute"), tags, m.Rate15(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), tags, m.RateMean(), timestamp, r.source)
 }
 
-func (r *MetricsReporter) reportTimer(name string, metric metrics.Timer, tags map[string]string) {
+func (r *MetricsReporter) reportTimer(name string, metric metrics.Timer, tags map[string]string, timestamp int64) {
 	t := metric.Snapshot()
 	du := float64(r.durationUnit)
 	ps := t.Percentiles(r.percentiles)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), float64(t.Count()), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".min"), float64(t.Min()/int64(du)), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".max"), float64(t.Max()/int64(du)), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), t.Mean()/du, 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".std-dev"), t.StdDev()/du, 0, r.source, tags)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".count"), tags, float64(t.Count()), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".min"), tags, float64(t.Min()/int64(du)), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".max"), tags, float64(t.Max()/int64(du)), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean"), tags, t.Mean()/du, timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".std-dev"), tags, t.StdDev()/du, timestamp, r.source)
 	for psIdx, psKey := range r.percentiles {
 		key := strings.Replace(strconv.FormatFloat(psKey*100.0, 'f', -1, 64), ".", "", 1)
-		r.errors <- r.sender.SendMetric(r.prepareName(name+"."+key+"-percentile"), ps[psIdx]/du, 0, r.source, tags)
+		r.errors <- r.sender.SendMetric(r.prepareName(name+"."+key+"-percentile"), tags, ps[psIdx]/du, timestamp, r.source)
 	}
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".one-minute"), t.Rate1(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".five-minute"), t.Rate5(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".fifteen-minute"), t.Rate15(), 0, r.source, tags)
-	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean-rate"), t.RateMean(), 0, r.source, tags)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".one-minute"), tags, t.Rate1(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".five-minute"), tags, t.Rate5(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".fifteen-minute"), tags, t.Rate15(), timestamp, r.source)
+	r.errors <- r.sender.SendMetric(r.prepareName(name+".mean-rate"), tags, t.RateMean(), timestamp, r.source)
 }
 
 func (r *MetricsReporter) prepareName(name string, suffix ...string) string {
@@ -328,6 +314,7 @@ func (r *MetricsReporter) prepareName(name string, suffix ...string) string {
 }
 
 func (r *MetricsReporter) Start() {
+	r.runOnce()
 	r.start <- true
 }
 
@@ -336,11 +323,11 @@ func (r *MetricsReporter) Close() {
 }
 
 // RegistryError returned if there is any error on RegisterMetric
-type RegistryError string
-
-func (err RegistryError) Error() string {
-	return fmt.Sprintf("Registry Error: %s", string(err))
-}
+//type RegistryError string
+//
+//func (err RegistryError) Error() string {
+//	return fmt.Sprintf("Registry Error: %s", string(err))
+//}
 
 // RegisterMetric register the given metric under the given name and tags
 // return RegistryError if the metric is not registered
