@@ -4,7 +4,6 @@ import (
 	"github.com/Edward-Alphonse/saywo_metrics"
 	"github.com/Edward-Alphonse/saywo_metrics/sender"
 	"os"
-	"time"
 )
 
 func main() {
@@ -25,5 +24,6 @@ func main() {
 	}, 2)
 
 	saywo_metrics.Close()
-	time.Sleep(10 * time.Second)
+	for {
+	}
 }

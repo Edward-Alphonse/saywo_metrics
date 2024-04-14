@@ -38,9 +38,20 @@ func ALiSLS(config *sender.ALiSLSConfig) MetricOption {
 	})
 }
 
+func console() MetricOption {
+	sender := sender.NewConsoleSender()
+	return MetricOptionFunc(func() reporter.Reporter {
+		setter := make([]reporter.Option, 0)
+		interval := time.Duration(10) * time.Second
+		setter = append(setter, reporter.Interval(interval))
+		return reporter.NewMetricsReporter(sender, setter...)
+	})
+}
+
 func Register(opts ...MetricOption) {
 	metric = new(SwMetric)
 	for _, opt := range opts {
 		opt.registryTo(metric)
 	}
+	console().registryTo(metric)
 }
