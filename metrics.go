@@ -49,9 +49,20 @@ func GaugeFloat64(name string, labels map[string]string, value float64) {
 	gauge.Update(value)
 }
 
-func Histogram(name string, labels map[string]string) {
-	//key := utils.EncodeKey(name, labels)
-	//metrics.GetOrRegisterHistogram(key, metrics.DefaultRegistry)
+// prometheus Histogram
+func ExpDecayHistogram(name string, labels map[string]string, value int64) {
+	s := metrics.NewExpDecaySample(1028, 0.015)
+	key := utils.EncodeKey(name, labels)
+	histogram := metrics.GetOrRegisterHistogram(key, metrics.DefaultRegistry, s)
+	histogram.Update(value)
+}
+
+// prometheus summary
+func UniformHistogram(name string, labels map[string]string, value int64) {
+	s := metrics.NewUniformSample(1028)
+	key := utils.EncodeKey(name, labels)
+	histogram := metrics.GetOrRegisterHistogram(key, metrics.DefaultRegistry, s)
+	histogram.Update(value)
 }
 
 func Meter(name string, labels map[string]string) {
